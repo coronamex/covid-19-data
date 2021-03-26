@@ -46,28 +46,26 @@ def load_population(year=2020):
     .rename(columns={'entity': 'location', 'year': 'population_year'})
 
 def load_owid_continents():
-    df = pd.read_csv(
+    return pd.read_csv(
         CONTINENTS_CSV_PATH,
         keep_default_na=False,
         header=0,
         names=['location', 'code', 'year', 'continent'],
         usecols=['location', 'continent']
     )
-    return df
 
 locations_by_continent = load_owid_continents() \
     .groupby('continent')['location'].apply(list) \
     .to_dict()
 
 def load_wb_income_groups():
-    df = pd.read_csv(
+    return pd.read_csv(
         WB_INCOME_GROUPS_CSV_PATH,
         keep_default_na=False,
         header=0,
         names=['location', 'year', 'income_group'],
         usecols=['location', 'income_group']
     )
-    return df
 
 def load_eu_country_names():
     df = pd.read_csv(
@@ -593,8 +591,11 @@ def standard_export(df, output_path, grapher_name):
         .to_csv(os.path.join(output_path, '%s.csv' % grapher_name), index=False)
 
     # Table & public extracts for external users
-    # Excludes most aggregates
-    excluded_aggregates = list(set(aggregates_spec.keys()) - set(['World']))
+    # Excludes aggregates
+    excluded_aggregates = list(set(aggregates_spec.keys()) - set([
+        'World', 'North America', 'South America', 'Europe', 'Africa', 'Asia', 'Oceania',
+        'European Union'
+    ]))
     df_table = df[~df['location'].isin(excluded_aggregates)]
     # full_data.csv
     full_data_cols = existsin(FULL_DATA_COLS, df_table.columns)

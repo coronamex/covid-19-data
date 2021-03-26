@@ -1,35 +1,71 @@
 import datetime
-import pytz
 import requests
+
 from bs4 import BeautifulSoup
 import pandas as pd
+import pytz
+
 import vaxutils
 
+
+def read(source: str) -> pd.Series:
+    soup = BeautifulSoup(requests.get(source).content, "html.parser")
+    return parse_data(soup)
+
+
+def parse_data(soup: BeautifulSoup) -> pd.Series:
+
+    numbers = soup.find(class_="cifras-coronavirus").find_all(class_="cifra")
+
+    return pd.Series(data={
+        "total_vaccinations": vaxutils.clean_count(numbers[1].text),
+        "people_fully_vaccinated": vaxutils.clean_count(numbers[2].text),
+        "date": set_date()
+    })
+
+
+def set_date() -> str:
+    return str(datetime.datetime.now(pytz.timezone("Europe/Madrid")).date() - datetime.timedelta(days=1))
+
+
+def add_vaccinated(input: pd.Series) -> pd.Series:
+    people_vaccinated = input["total_vaccinations"] - input["people_fully_vaccinated"]
+    return vaxutils.enrich_data(input, "people_vaccinated", people_vaccinated)
+
+
+def enrich_location(input: pd.Series) -> pd.Series:
+    return vaxutils.enrich_data(input, "location", "Spain")
+
+
+def enrich_vaccine(input: pd.Series) -> pd.Series:
+    return vaxutils.enrich_data(input, "vaccine", "Moderna, Oxford/AstraZeneca, Pfizer/BioNTech")
+
+
+def enrich_source(input: pd.Series, source: str) -> pd.Series:
+    return vaxutils.enrich_data(input, "source_url", source)
+
+
+def pipeline(input: pd.Series, source: str) -> pd.Series:
+    return (
+        input
+        .pipe(add_vaccinated)
+        .pipe(enrich_location)
+        .pipe(enrich_vaccine)
+        .pipe(enrich_source, source)
+    )
+
+
 def main():
-
-    url = "https://www.mscbs.gob.es/profesionales/saludPublica/ccayes/alertasActual/nCov/vacunaCovid19.htm"
-    soup = BeautifulSoup(requests.get(url).content, "html.parser")
-
-    for a in soup.find(class_="menuCCAES").find_all("a"):
-        if ".ods" in a["href"]:
-            url = "https://www.mscbs.gob.es/profesionales/saludPublica/ccayes/alertasActual/nCov/" + a["href"]
-
-    df = pd.read_excel(url)
-
-    total_vaccinations = int(df.loc[df["Unnamed: 0"] == "Totales", "Dosis administradas (2)"].values[0])
-    people_fully_vaccinated = int(df.loc[df["Unnamed: 0"] == "Totales", "Nº Personas vacunadas(pauta completada)"].values[0])
-    people_vaccinated = total_vaccinations - people_fully_vaccinated
-
-    date = str(datetime.datetime.now(pytz.timezone("Europe/Madrid")).date())
-
+    source = "https://www.mscbs.gob.es/profesionales/saludPublica/ccayes/alertasActual/nCov/vacunaCovid19.htm"
+    data = read(source).pipe(pipeline, source)
     vaxutils.increment(
-        location="Spain",
-        total_vaccinations=total_vaccinations,
-        people_vaccinated=people_vaccinated,
-        people_fully_vaccinated=people_fully_vaccinated,
-        date=date,
-        source_url=url,
-        vaccine="Moderna, Pfizer/BioNTech"
+        location=data["location"],
+        total_vaccinations=data["total_vaccinations"],
+        people_vaccinated=data["people_vaccinated"],
+        people_fully_vaccinated=data["people_fully_vaccinated"],
+        date=data["date"],
+        source_url=data["source_url"],
+        vaccine=data["vaccine"]
     )
 
 

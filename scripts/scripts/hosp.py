@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import requests
+import numpy as np
 import pandas as pd
 
 
@@ -16,6 +17,7 @@ POPULATION = pd.read_csv(
 
 
 def download_data():
+    print("Downloading ECDC data…")
     df = pd.read_csv(SOURCE_URL, usecols=["country", "indicator", "date", "value", "year_week"])
     df = df.drop_duplicates()
     df = df.rename(columns={"country": "entity"})
@@ -48,38 +50,62 @@ def week_to_date(df):
 
 
 def add_united_states(df):
-    usa = pd.read_csv(
-        "https://covidtracking.com/data/download/national-history.csv",
-        usecols=[
-            "date", "hospitalizedCurrently", "inIcuCurrently", "hospitalizedIncrease", "inIcuCumulative"
-        ]
+    print("Downloading US data…")
+    # TODO this API url is being retired. the "legacy" domain name will keep working for a few (2?) weeks and then be shut down
+    # To keep working this code will need to be ported to use the new API (released over the weekend) 
+    url = "https://legacy.healthdata.gov/api/3/action/package_show?id=83b4a668-9321-4d8c-bc4f-2bef66c49050"
+    metadata = requests.get(url).json()
+    url = metadata["result"][0]["resources"][0]["url"]
+
+    usa = pd.read_csv(url, usecols=[
+        "date",
+        "total_adult_patients_hospitalized_confirmed_covid",
+        "total_pediatric_patients_hospitalized_confirmed_covid",
+        "staffed_icu_adult_patients_confirmed_covid",
+        "previous_day_admission_adult_covid_confirmed",
+        "previous_day_admission_pediatric_covid_confirmed",
+    ])
+
+    usa = usa[usa.date >= "2020-07-15"]
+    usa.loc[:, "date"] = pd.to_datetime(usa.date)
+    usa = usa.groupby("date", as_index=False).sum()
+
+    stock = usa[[
+        "date",
+        "total_adult_patients_hospitalized_confirmed_covid",
+        "total_pediatric_patients_hospitalized_confirmed_covid",
+        "staffed_icu_adult_patients_confirmed_covid",
+    ]].copy()
+    stock.loc[:, "Daily hospital occupancy"] = (
+        stock.total_adult_patients_hospitalized_confirmed_covid
+        .add(stock.total_pediatric_patients_hospitalized_confirmed_covid)
     )
-
-    usa.loc[:, "date"] = pd.to_datetime(usa["date"])
-    usa = usa.sort_values("date")
-    usa = usa[usa["date"] >= "2020-03-02"]
-
-    usa.loc[:, "icuIncrease"] = usa["inIcuCumulative"].sub(usa["inIcuCumulative"].shift(1))
-    usa = usa.drop(columns=["inIcuCumulative"])
-
-    stock = usa[["date", "hospitalizedCurrently", "inIcuCurrently"]]
-    stock = stock.melt("date", ["hospitalizedCurrently", "inIcuCurrently"])
+    stock = stock.rename(columns={
+        "staffed_icu_adult_patients_confirmed_covid": "Daily ICU occupancy"
+    })
+    stock = stock[["date", "Daily hospital occupancy", "Daily ICU occupancy"]]
+    stock = stock.melt(id_vars="date", var_name="indicator")
     stock.loc[:, "date"] = stock["date"].dt.date
 
-    flow = usa[["date", "hospitalizedIncrease", "icuIncrease"]].copy()
-    flow.loc[:, "date"] = (flow["date"] + pd.to_timedelta(6 - flow["date"].dt.dayofweek, unit="d")).dt.date
+    flow = usa[[
+        "date",
+        "previous_day_admission_adult_covid_confirmed",
+        "previous_day_admission_pediatric_covid_confirmed",
+    ]].copy()
+    flow.loc[:, "value"] = (
+        flow.previous_day_admission_adult_covid_confirmed
+        .add(flow.previous_day_admission_pediatric_covid_confirmed)
+    )
+    flow.loc[:, "date"] = (
+        (flow["date"] + pd.to_timedelta(6 - flow["date"].dt.dayofweek, unit="d")).dt.date
+    )
     flow = flow[flow["date"] <= datetime.date.today()]
+    flow = flow[["date", "value"]]
     flow = flow.groupby("date", as_index=False).sum()
-    flow = flow.melt("date", ["hospitalizedIncrease", "icuIncrease"])
+    flow.loc[:, "indicator"] = "Weekly new hospital admissions"
 
-    usa = pd.concat([stock, flow]).dropna(subset=["value"])
-    usa = usa.rename(columns={"variable": "indicator"})
-    usa.loc[:, "indicator"] = usa["indicator"].replace({
-        "hospitalizedCurrently": "Daily hospital occupancy",
-        "inIcuCurrently": "Daily ICU occupancy",
-        "hospitalizedIncrease": "Weekly new hospital admissions",
-        "icuIncrease": "Weekly new ICU admissions"
-    })
+    # Merge all subframes
+    usa = pd.concat([stock, flow])
 
     usa.loc[:, "entity"] = "United States"
     usa.loc[:, "iso_code"] = "USA"
@@ -90,6 +116,7 @@ def add_united_states(df):
 
 
 def add_canada(df):
+    print("Downloading Canada data…")
     url = "https://api.covid19tracker.ca/reports?after=2020-03-09"
     data = requests.get(url).json()
     data = json.dumps(data["data"])
@@ -111,6 +138,7 @@ def add_canada(df):
 
 
 def add_uk(df):
+    print("Downloading UK data…")
     url = "https://api.coronavirus.data.gov.uk/v2/data?areaType=overview&metric=hospitalCases&metric=newAdmissions&metric=covidOccupiedMVBeds&format=csv"
     uk = pd.read_csv(url, usecols=["date", "hospitalCases", "newAdmissions", "covidOccupiedMVBeds"])
     uk.loc[:, "date"] = pd.to_datetime(uk["date"])
@@ -140,10 +168,44 @@ def add_uk(df):
     return df
 
 
+def add_israel(df):
+    print("Downloading Israel data…")
+    url = "https://datadashboardapi.health.gov.il/api/queries/patientsPerDate"
+    israel = pd.read_json(url)
+    israel.loc[:, "date"] = pd.to_datetime(israel["date"])
+
+    stock = israel[["date", "Counthospitalized", "CountCriticalStatus"]].copy()
+    stock.loc[:, "date"] = stock["date"].dt.date
+    stock.loc[stock["date"].astype(str) < "2020-08-17", "CountCriticalStatus"] = np.nan
+    stock = stock.melt("date", var_name="indicator")
+
+    flow = israel[["date", "new_hospitalized", "serious_critical_new"]].copy()
+    flow.loc[:, "date"] = (flow["date"] + pd.to_timedelta(6 - flow["date"].dt.dayofweek, unit="d")).dt.date
+    flow = flow[flow["date"] <= datetime.date.today()]
+    flow = flow.groupby("date", as_index=False).sum()
+    flow = flow.melt("date", var_name="indicator")
+
+    israel = pd.concat([stock, flow]).dropna(subset=["value"])
+    israel.loc[:, "indicator"] = israel["indicator"].replace({
+        "Counthospitalized": "Daily hospital occupancy",
+        "CountCriticalStatus": "Daily ICU occupancy",
+        "new_hospitalized": "Weekly new hospital admissions",
+        "serious_critical_new": "Weekly new ICU admissions"
+    })
+
+    israel.loc[:, "entity"] = "Israel"
+    israel.loc[:, "iso_code"] = "ISR"
+    israel.loc[:, "population"] = 8655541
+
+    return pd.concat([df, israel])
+
+
+
 def add_countries(df):
     df = add_united_states(df)
     df = add_canada(df)
     df = add_uk(df)
+    df = add_israel(df)
     return df
 
 
@@ -158,7 +220,11 @@ def add_per_million(df):
 def owid_format(df):
     df.loc[:, "value"] = df["value"].round(3)
     df = df.drop(columns="iso_code")
+
+    # Data cleaning
+    df = df[-df["indicator"].str.contains("Weekly new plot admissions")]
     df = df.groupby(["entity", "date", "indicator"], as_index=False).max()
+
     df = df.pivot(index=["entity", "date"], columns="indicator").value.reset_index()
     return df
 

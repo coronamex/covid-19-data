@@ -1,25 +1,31 @@
+import requests
+
 import pandas as pd
 
-def main():
 
-    url = "https://raw.githubusercontent.com/ishaberry/Covid19Canada/master/timeseries_canada/vaccine_administration_timeseries_canada.csv"
-    df = pd.read_csv(url, usecols=["date_vaccine_administered", "cumulative_avaccine"])
+def read(source: str) -> pd.DataFrame:
+    data = requests.get(source).json()
+    return pd.DataFrame.from_records(data["data"])
 
-    df = df.rename(columns={
-        "date_vaccine_administered": "date",
-        "cumulative_avaccine": "total_vaccinations"
-    })
 
-    df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y")
+def pipeline(df: pd.DataFrame) -> pd.DataFrame:
+    df = df[df.total_vaccinations > 0]
+    df = (
+        df[["date", "total_vaccinations", "total_vaccinated"]]
+        .rename(columns={"total_vaccinated": "people_fully_vaccinated"})
+        .sort_values("date")
+    )
+    df = df.assign(
+        people_vaccinated=df.total_vaccinations - df.people_fully_vaccinated,
+        location="Canada",
+        source_url="https://covid19tracker.ca/vaccinationtracker.html",
+        vaccine="Moderna, Oxford/AstraZeneca, Pfizer/BioNTech",
+    )
+    return df
 
-    df = df.groupby("total_vaccinations", as_index=False).min()
-    
-    df.loc[:, "location"] = "Canada"
-    df.loc[:, "vaccine"] = "Pfizer/BioNTech"
-    df.loc[df["date"] >= "2020-12-31", "vaccine"] = "Moderna, Pfizer/BioNTech"
-    df.loc[:, "source_url"] = "https://github.com/ishaberry/Covid19Canada/blob/master/timeseries_canada/vaccine_administration_timeseries_canada.csv"
-
-    df.to_csv("automations/output/Canada.csv", index=False)
 
 if __name__ == "__main__":
-    main()
+    source = "https://api.covid19tracker.ca/reports"
+    destination = "automations/output/Canada.csv"
+
+    read(source).pipe(pipeline).to_csv(destination, index=False)

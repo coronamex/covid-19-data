@@ -87,7 +87,7 @@ def get_jhu():
 
 def get_reprod():
     reprod = pd.read_csv(
-        os.path.join(INPUT_DIR, "reproduction/database.csv"),
+        "https://github.com/crondonm/TrackingR/raw/main/Estimates-Database/database.csv",
         usecols=["Country/Region", "Date", "R", "days_infectious"]
     )
     reprod = (
@@ -135,7 +135,11 @@ def get_vax():
             "total_vaccinations_per_hundred",
             "daily_vaccinations_raw",
             "daily_vaccinations",
-            "daily_vaccinations_per_million"
+            "daily_vaccinations_per_million",
+            "people_vaccinated",
+            "people_vaccinated_per_hundred",
+            "people_fully_vaccinated",
+            "people_fully_vaccinated_per_hundred",
         ]
     )
     vax = vax.rename(columns={
@@ -144,6 +148,8 @@ def get_vax():
         "daily_vaccinations_per_million": "new_vaccinations_smoothed_per_million"
     })
     vax["total_vaccinations_per_hundred"] = vax["total_vaccinations_per_hundred"].round(3)
+    vax["people_vaccinated_per_hundred"] = vax["people_vaccinated_per_hundred"].round(3)
+    vax["people_fully_vaccinated_per_hundred"] = vax["people_fully_vaccinated_per_hundred"].round(3)
     return vax
 
 
@@ -275,6 +281,20 @@ def get_cgrt():
     return cgrt
 
 
+def dict_to_compact_json(d: dict):
+    """
+    Encodes a Python dict into valid, minified JSON.
+    """
+    return json.dumps(
+        d,
+        # Use separators without any trailing whitespace to minimize file size.
+        # The defaults (", ", ": ") contain a trailing space.
+        separators=(",", ":"),
+        # The json library by default encodes NaNs in JSON, but this is invalid JSON.
+        # By having this False, an error will be thrown if a NaN exists in the data.
+        allow_nan=False
+    )
+
 def df_to_json(complete_dataset, output_path, static_columns):
     """
     Writes a JSON version of the complete dataset, with the ISO code at the root.
@@ -297,8 +317,29 @@ def df_to_json(complete_dataset, output_path, static_columns):
         ]
 
     with open(output_path, "w") as file:
-        file.write(json.dumps(megajson, separators=(",", ":")))
+        file.write(dict_to_compact_json(megajson))
 
+def df_to_columnar_json(complete_dataset, output_path):
+    """
+    Writes a columnar JSON version of the complete dataset.
+    NA values are dropped from the output.
+
+    In columnar JSON, the table headers are keys, and the values are lists
+    of all cells for a column.
+    Example:
+        {
+            "iso_code": ["AFG", "AFG", ... ],
+            "date": ["2020-03-01", "2020-03-02", ... ]
+        }
+    """
+    # Replace NaNs with None in order to be serializable to JSON.
+    # JSON doesn't support NaNs, but it does have null which is represented as None in Python.
+    columnar_dict = complete_dataset.where(
+        pd.notnull(complete_dataset),
+        None
+    ).to_dict(orient='list')
+    with open(output_path, "w") as file:
+        file.write(dict_to_compact_json(columnar_dict))
 
 def create_latest(df):
 
@@ -312,7 +353,9 @@ def create_latest(df):
     print("Writing latest version…")
     latest.to_csv(os.path.join(DATA_DIR, "latest/owid-covid-latest.csv"), index=False)
     latest.to_excel(os.path.join(DATA_DIR, "latest/owid-covid-latest.xlsx"), index=False)
-    latest.set_index("iso_code").to_json(os.path.join(DATA_DIR, "latest/owid-covid-latest.json"), orient="index")
+    latest.dropna(subset=["iso_code"]).set_index("iso_code").to_json(
+        os.path.join(DATA_DIR, "latest/owid-covid-latest.json"), orient="index"
+    )
 
 
 def generate_megafile():
@@ -343,7 +386,7 @@ def generate_megafile():
 
     print("\nFetching vaccination dataset…")
     vax = get_vax()
-    vax = vax[vax.location.isin(jhu.location)]
+    vax = vax[-vax.location.isin(["England", "Northern Ireland", "Scotland", "Wales"])]
 
     print("\nFetching OxCGRT dataset…")
     cgrt = get_cgrt()
@@ -419,6 +462,9 @@ def generate_megafile():
 
     print("Writing to JSON…")
     df_to_json(all_covid, os.path.join(DATA_DIR, "owid-covid-data.json"), macro_variables.keys())
+
+    print("Writing to columnar JSON…")
+    df_to_columnar_json(all_covid, os.path.join(DATA_DIR, "owid-covid-data.columnar.json"))
 
     # Store the last updated time
     timestamp_filename = os.path.join(DATA_DIR, "owid-covid-data-last-updated-timestamp.txt")
